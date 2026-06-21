@@ -19,8 +19,6 @@ memory = SqliteSaver(db_con)
 
 config = {'configurable': {'thread_id':1}}
 
-from langchain.chat_models import init_chat_model
-
 class State(TypedDict):
     messages: Annotated[list, add_messages]
 
