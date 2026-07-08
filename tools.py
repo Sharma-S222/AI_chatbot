@@ -1,40 +1,27 @@
 from langchain_core.tools import tool
 from langchain_exa import ExaSearchRetriever
+from pyowm import OWM
+from datetime import datetime
+import os
+import psycopg
+from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 load_dotenv()
 
 @tool
 def metal_price_tool(name: str) -> float :
     """
-    This function provides the latest price per kg of various metals in USD. 
-    You must specify a single metal name as input, and it will return its current market value. 
-
-    ALWAYS use this tool instead of web search if the user asks for the price, rate, 
-    cost, or market valuation of any metal. 
-
-    Supported metals include but are not limited to:
-    - Precious Metals: Gold, Silver, Platinum, Palladium
-    - Base & Industrial Metals: Copper, Aluminum, Zinc, Lead, Nickel, Tin, Iron Ore, Steel
-    - Battery & Rare Metals: Lithium, Cobalt, Manganese
-
-    CRITICAL FAILURE HANDLING: 
-    If the metal name is unrecognized or unsupported, this tool will raise a ValueError. 
-    If you receive a ValueError or an error message from this tool, you are explicitly 
-    authorized to fall back to the 'web_search' tool to find the price manually.
-
-    Args:
-        metal_name (str): The common lowercase name of the metal (e.g., 'gold', 'copper').
-                          Do not include extra words like 'price' or 'today'.
-
-    Returns:
-        str: Current per kg price of the metal in USD, or an error message.
+    This function provides you with the latest price per kg of various metals in USD. 
+    You just need to specify the metal name as input, and it will return its current market value. 
+    If any unrecognized metal is provided, a ValueError will be raised.
+    :param name: metal name
+    :return: current per kg price of the metal
     """
-
 
     metal_price = {
         # --- Precious Metals ---
         "gold": 132488.1500,
-        "rhodium": 154320.0000,
+        "rhodium": 257550.0000,
         "iridium": 147890.0000,
         "palladium": 40622.4500,
         "platinum": 54067.8500,
@@ -85,26 +72,24 @@ def metal_price_tool(name: str) -> float :
         "manganese": 2.8500,
         "iron": 0.1100
     }
-    price = metal_price.get(name, 0.0)
+    price = metal_price.get(name, 00)
     return price
 
 @tool
-def convert_currency(amount: float, symbol: str) -> float :
-    """Converts an amount from US Dollars (USD) to a target foreign currency.
-
-    This function standardizes the input currency code to uppercase, checks
-    if it exists within the supported rates dictionary, and calculates the 
-    converted monetary value. If the currency code is unrecognized, it 
-    defaults to a 1:1 fallback rate (treating it as USD).
+def convert_currency(amount: float, symbol: str, symbol2: str) -> float :
+    """Converts amount from one currency to another. 
+    3-letter ISO 4217 currency code (e.g., 'EUR', 'INR') should be used.
 
     Args:
         amount: The monetary value in USD to be converted.
-        symbol: The 3-letter ISO 4217 currency code (e.g., 'EUR', 'INR').
+        symbol: The symbol for the current currency of the amount.
+        symbol2: The symbol of the current in which it is to be converted.
 
     Returns:
         The converted amount in the requested currency as a float.
     """
     usd_exchange_value = {
+        "USD" : 1,
         "EUR" : 0.8660,  
         "GBP" : 0.7557, 
         "INR" : 94.4600, 
@@ -116,24 +101,21 @@ def convert_currency(amount: float, symbol: str) -> float :
         "SEK" : 10.5820,
         "NZD" : 1.6980
     }
-    if symbol.upper() not in usd_exchange_value:
-        rate = amount*1
-    else:  
-        val = usd_exchange_value.get(symbol,0.0)
-        rate = val * amount
-
-    return rate
+    usd = usd_exchange_value.get(symbol, 0.0)
+    usd_amount = amount/usd
+    rate = usd_exchange_value.get(symbol2, 0.0)
+    total = usd_amount * rate
+    return total
 
 search_tool = ExaSearchRetriever(k = 3)
 
 @tool
 def web_search(query: str) -> str :
     """
-    Search the internet to retrieve up-to-date information, facts, and live web contents.
-
     Use this tool whenever the user's question requires information that may
     have changed after the model's training data, including:
 
+    - Date and time
     - Current events and news
     - Weather forecasts and conditions
     - Stock prices and market data
@@ -153,3 +135,73 @@ def web_search(query: str) -> str :
     result = search_tool.invoke(query)
     return result
 
+
+api_key= os.getenv("OPENWEATHER_API_KEY")
+own = OWM(api_key)
+mgr = own.weather_manager()
+
+@tool
+def weather_report(city: str) -> dict :
+    """Fetches real-time weather details for a specific location from OpenWeather API."""
+    observation = mgr.weather_at_place(city)
+    weather = observation.weather
+    report = weather.to_dict()
+    return report
+
+
+@tool
+def current_time():
+    """
+    call this everytime it is asked for date or time, cause time changes continuously and having the latest time is essential.
+    Return current time and date. Call it everytime it is needed. Helps in knowing the latest time with seconds accuracy.
+    """
+    time = datetime.now().isoformat()
+    return time
+
+
+#For vector searching but as an tool. 
+embedding_model = SentenceTransformer("BAAI/bge-m3")
+db_url = "postgresql://postgres:ASDFASDF@localhost:5432/postgres"
+
+@tool
+def CK_search(query: str) -> dict:
+    """
+    Look up factual information regarding Google, Apple, and Microsoft
+    history, operating systems, hardware strategies, supply chains, and cloud platforms.
+
+    Args: 
+        query : the specific search query
+
+    Return:
+        dict: A dictionary containing the retrieved text 'context' and a 'confidence_score'
+    """
+    query_vector = embedding_model.encode(query,normalize_embeddings=True ).tolist()
+
+    matched_paragraphs = []
+    best_distance = 2.0
+
+    with psycopg.connect(db_url) as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT p.content, (c.embedding <=> %s::vector) AS dist
+            FROM child_chunks c 
+            INNER JOIN parent_chunk p ON c.parent_id = p.id
+            ORDER BY dist ASC 
+            LIMIT 3;
+        """, (query_vector,)) 
+
+        rows = cur.fetchall()
+
+    if rows:
+        best_distance = rows[0][1]
+
+        for row in rows:
+            # row[0] = content, row[1] = distance score
+            if row[1] < 0.55:
+                matched_paragraphs.append(row[0])
+
+    confidence = max(0.0, 1.0 - best_distance)
+
+    return {
+        "context": "\n\n".join(matched_paragraphs) if matched_paragraphs else "No matching data found.",
+        "confidence_score": confidence
+    }
