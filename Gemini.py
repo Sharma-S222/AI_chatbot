@@ -4,6 +4,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.prebuilt import ToolNode, tools_condition
 from typing import TypedDict, Annotated
 from langgraph.graph import StateGraph, START, add_messages
+from Rag_retrieve import retriever
 from tools import (metal_price_tool,convert_currency, web_search, weather_report, current_time, CK_search)
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import SystemMessage
@@ -30,7 +31,7 @@ con_kwgs = {
 class State(TypedDict):
     messages: Annotated[list, add_messages]
 
-llm_with_tools = llm.bind_tools([metal_price_tool, convert_currency, web_search, weather_report, current_time, CK_search])
+llm_with_tools = llm.bind_tools([retriever,metal_price_tool, convert_currency, web_search, weather_report, current_time, CK_search])
 
 def chatbot(state: State):
     messages = [
@@ -51,7 +52,7 @@ def chatbot(state: State):
 
 builder = StateGraph(State)
 builder.add_node(chatbot)
-builder.add_node("tools", ToolNode([metal_price_tool, convert_currency, web_search, weather_report, current_time, CK_search]))
+builder.add_node("tools", ToolNode([retriever,metal_price_tool, convert_currency, web_search, weather_report, current_time, CK_search]))
 
 builder.add_edge(START, "chatbot")
 builder.add_conditional_edges("chatbot", tools_condition)
@@ -61,7 +62,7 @@ with ConnectionPool(conninfo=db_url, max_size=10, kwargs=con_kwgs) as pool:
     cp = PostgresSaver(pool)
     cp.setup()
     graph = builder.compile(checkpointer=cp)
-    config = {'configurable': {'thread_id':7}}
+    config = {'configurable': {'thread_id':670}}
 
     while True:
         time1 = datetime.now().isoformat()
@@ -69,10 +70,17 @@ with ConnectionPool(conninfo=db_url, max_size=10, kwargs=con_kwgs) as pool:
         if msg1 in {"exit", "goodbye", "bye"}:
             break
         msg = [msg1, time1]
-        state = graph.invoke({"messages": [{"role":"user","content":msg}]}, config=config)
-        print("Gemini: ")
-        text=state["messages"][-1].content
-        for char in text:
-            print(char, end='', flush=True)
-            time.sleep(0.01)
+        print("Gemini: ", end="", flush=True)
+        state = graph.stream(
+            {"messages": [{"role":"user","content":msg}]}, 
+            config=config,
+            stream_mode="updates"
+        )
+        for chunk in state:
+            if "chatbot" in chunk:
+                node_message = chunk["chatbot"]["messages"][-1]
+                if hasattr(node_message, 'content') and node_message.content:
+                    for char in node_message.content:
+                        print(char, end="", flush= True)
+                        time.sleep(0.01)
         print()

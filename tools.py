@@ -160,8 +160,8 @@ def current_time():
 
 
 #For vector searching but as an tool. 
-embedding_model = SentenceTransformer("BAAI/bge-m3")
 db_url = "postgresql://postgres:ASDFASDF@localhost:5432/postgres"
+embedding_model = None
 
 @tool
 def CK_search(query: str) -> dict:
@@ -175,6 +175,9 @@ def CK_search(query: str) -> dict:
     Return:
         dict: A dictionary containing the retrieved text 'context' and a 'confidence_score'
     """
+    global embedding_model
+    if embedding_model is None:
+        embedding_model = SentenceTransformer("BAAI/bge-m3")
     query_vector = embedding_model.encode(query,normalize_embeddings=True ).tolist()
 
     matched_paragraphs = []
@@ -187,7 +190,7 @@ def CK_search(query: str) -> dict:
             INNER JOIN parent_chunk p ON c.parent_id = p.id
             ORDER BY dist ASC 
             LIMIT 3;
-        """, (query_vector,)) 
+        """, (query_vector)) 
 
         rows = cur.fetchall()
 
@@ -205,3 +208,4 @@ def CK_search(query: str) -> dict:
         "context": "\n\n".join(matched_paragraphs) if matched_paragraphs else "No matching data found.",
         "confidence_score": confidence
     }
+    
